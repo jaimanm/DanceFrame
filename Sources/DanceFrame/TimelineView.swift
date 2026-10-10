@@ -66,6 +66,71 @@ struct TimelineView: View {
                 }
             }
 
+            // Auto-Track Controls Bar
+            if vm.engine.metadata != nil {
+                HStack(spacing: 12) {
+                    if vm.isAutoTracking {
+                        HStack(spacing: 10) {
+                            ProgressView(value: vm.autoTrackProgress)
+                                .progressViewStyle(.linear)
+                                .tint(Color(hex: "#ddff8f"))
+                                .frame(width: 160)
+
+                            Text(String(format: "Auto-tracking: %.0f%%", vm.autoTrackProgress * 100))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundColor(Color(hex: "#ddff8f"))
+
+                            Button("Cancel") {
+                                vm.cancelAutoTrack()
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Color(hex: "#ffa49b"))
+                            .buttonStyle(.plain)
+                        }
+                    } else {
+                        let playheadTime = vm.engine.isScrubbing ? vm.engine.scrubTime : vm.engine.currentTime
+                        Button(action: {
+                            vm.startAutoTrack()
+                        }) {
+                            HStack(spacing: 6) {
+                                Text("⦿")
+                                    .font(.system(size: 12, weight: .bold))
+                                Text("Auto-Track from \(MotionInterpolator.formatTime(playheadTime))")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color(hex: "#1d2b27"))
+                            .foregroundColor(Color(hex: "#ddff8f"))
+                            .cornerRadius(5)
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "#3b5843"), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+
+                        HStack(spacing: 6) {
+                            Text("Sensitivity:")
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(hex: "#888c96"))
+
+                            Picker("", selection: $vm.autoTrackSensitivity) {
+                                ForEach(TrackingSensitivity.allCases, id: \.self) { s in
+                                    Text(s.rawValue).tag(s)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 95)
+                        }
+
+                        Text("Scrub to the frame the dancer appears, then click to track.")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(hex: "#6b707d"))
+                    }
+
+                    Spacer()
+                }
+                .padding(.vertical, 2)
+            }
+
             // Timeline Track
             GeometryReader { geo in
                 let w = geo.size.width

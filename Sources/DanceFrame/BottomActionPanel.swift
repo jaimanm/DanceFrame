@@ -49,6 +49,9 @@ struct BottomActionPanel: View {
                     Text("·").foregroundColor(.gray)
                     kbd("K")
                     Text("Add point")
+                    Text("·").foregroundColor(.gray)
+                    kbd("⦿")
+                    Text("Auto-track")
                 }
                 .font(.system(size: 10))
                 .foregroundColor(Color(hex: "#888d98"))

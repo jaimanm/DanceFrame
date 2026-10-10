@@ -8,6 +8,12 @@ A native, high-performance macOS desktop application built with **SwiftUI**, **A
 - **Interactive "YOUR CUT" Framing**:
   - Direct canvas visualizer of the 9:16 vertical crop.
   - Drag the crop window directly on the video to position your subject.
+- **Intelligent Vision Auto-Tracking**:
+  - Hardware-accelerated Apple Vision person tracking (`VNDetectHumanRectanglesRequest` & `VNDetectHumanBodyPoseRequest`).
+  - Automatically follow a dancer across the frame with occlusion awareness and edge/out-of-frame hold.
+  - Start auto-tracking from any chosen frame or playhead position.
+  - Configurable sensitivity presets (Fine, Medium, Coarse).
+  - Fully compatible with manual keyframes: adjust, fine-tune, or undo auto-generated points at any time.
 - **Precision Motion Timeline**:
   - Live timeline scrubbing without stutter or snap-back.
   - Green keyframe markers indicate tracking points.
