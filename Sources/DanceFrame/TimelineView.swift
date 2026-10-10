@@ -213,22 +213,18 @@ struct TimelineView: View {
                             if isSelected {
                                 Rectangle()
                                     .stroke(Color.white, lineWidth: 1.5)
-                                    .frame(width: 13, height: 13)
+                                    .frame(width: 14, height: 14)
                                     .rotationEffect(.degrees(45))
                             }
 
                             Rectangle()
                                 .fill(isSelected ? Color.white : Color(hex: "#ddff8f"))
-                                .frame(width: isSelected ? 10 : 9, height: isSelected ? 10 : 9)
+                                .frame(width: isSelected ? 10 : 8, height: isSelected ? 10 : 8)
                                 .rotationEffect(.degrees(45))
                         }
+                        .frame(width: 16, height: 16)
                         .position(x: pointNorm * w, y: h - 11)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            let isShift = NSEvent.modifierFlags.contains(.shift)
-                            let isCommand = NSEvent.modifierFlags.contains(.command)
-                            vm.handlePointClick(point, isShift: isShift, isCommand: isCommand)
-                        }
+                        .allowsHitTesting(false)
                     }
 
                     // Scrubber Indicator Line & Green Marker Thumb
@@ -236,11 +232,13 @@ struct TimelineView: View {
                         .fill(Color(hex: "#ddff8f"))
                         .frame(width: 2, height: h)
                         .position(x: handleX, y: h / 2)
+                        .allowsHitTesting(false)
 
                     RoundedRectangle(cornerRadius: 2)
                         .fill(Color(hex: "#ddff8f"))
                         .frame(width: 8, height: 22)
                         .position(x: handleX, y: 12)
+                        .allowsHitTesting(false)
                 }
                 .contentShape(Rectangle())
                 .gesture(
@@ -256,10 +254,19 @@ struct TimelineView: View {
                         }
                         .onEnded { value in
                             guard let meta = vm.engine.metadata else { return }
+                            let dragDist = abs(value.translation.width) + abs(value.translation.height)
+                            let isShift = NSEvent.modifierFlags.contains(.shift)
+                            let isCommand = NSEvent.modifierFlags.contains(.command)
+
+                            // If tapped without dragging, check if clicked near a keyframe diamond
+                            if dragDist < 4.0, let clickedPoint = pointNear(x: value.startLocation.x, totalWidth: w, duration: meta.duration) {
+                                vm.engine.isScrubbing = false
+                                vm.handlePointClick(clickedPoint, isShift: isShift, isCommand: isCommand)
+                                return
+                            }
+
                             let frac = max(0.0, min(1.0, value.location.x / w))
                             let targetSec = frac * meta.duration
-                            // Update currentTime immediately so the tick stays at the
-                            // final scrub position while the async seek finishes.
                             vm.engine.currentTime = targetSec
                             vm.engine.isScrubbing = false
                             vm.engine.seek(to: targetSec)
@@ -326,5 +333,21 @@ struct TimelineView: View {
         .background(Color(hex: "#1a1b1f"))
         .cornerRadius(10)
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: "#303238"), lineWidth: 1))
+    }
+
+    private func pointNear(x: CGFloat, totalWidth: CGFloat, duration: Double) -> TrackingPoint? {
+        let thresholdPixels: CGFloat = 12.0
+        var closest: TrackingPoint? = nil
+        var minDiff: CGFloat = thresholdPixels + 1.0
+
+        for pt in vm.points {
+            let ptX = CGFloat(pt.t / duration) * totalWidth
+            let diff = abs(ptX - x)
+            if diff <= thresholdPixels && diff < minDiff {
+                minDiff = diff
+                closest = pt
+            }
+        }
+        return closest
     }
 }
