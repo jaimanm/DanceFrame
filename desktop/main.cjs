@@ -56,38 +56,40 @@ if(!app.requestSingleInstanceLock())app.quit();else{
   app.setAboutPanelOptions({applicationName:'DanceFrame',applicationVersion:'1.0.0',copyright:'Local video reframing • Manual tracking and trimming'});
   protocol.handle('danceframe',async request=>{
    const url=new URL(request.url);
-   let file;
-   if(url.hostname==='app'&&url.pathname.startsWith('/media/'))file=media.get(url.pathname.slice(7))?.path;
-   else if(url.hostname==='app'){
+   let file,fileSize;
+   if(url.hostname==='app'&&url.pathname.startsWith('/media/')){
+    const item=media.get(url.pathname.slice(7));
+    if(item){file=item.path;fileSize=item.size;}
+   }else if(url.hostname==='app'){
     const name=url.pathname==='/'?'index.html':url.pathname.slice(1);
     if(!['index.html','app.js','style.css'].includes(name))return new Response('Not found',{status:404});
     file=path.join(root,name);
    }
    if(!file)return new Response('Not found',{status:404});
    try{
-    const stat=await fs.stat(file);
+    if(fileSize===undefined)fileSize=(await fs.stat(file)).size;
     const mime=mimeTypes[path.extname(file).toLowerCase()]||'application/octet-stream';
     const rangeHeader=request.headers.get('range');
     if(rangeHeader){
      const match=/bytes=(\d*)-(\d*)/.exec(rangeHeader);
      if(match){
       let start=match[1]?parseInt(match[1],10):0;
-      let end=match[2]?parseInt(match[2],10):stat.size-1;
+      let end=match[2]?parseInt(match[2],10):fileSize-1;
       if(!match[1]&&match[2]){
-       start=Math.max(0,stat.size-parseInt(match[2],10));
-       end=stat.size-1;
+       start=Math.max(0,fileSize-parseInt(match[2],10));
+       end=fileSize-1;
       }
-      if(start>end||start>=stat.size){
-       return new Response('Requested range not satisfiable',{status:416,headers:{'Content-Range':`bytes */${stat.size}`}});
+      if(start>end||start>=fileSize){
+       return new Response('Requested range not satisfiable',{status:416,headers:{'Content-Range':`bytes */${fileSize}`}});
       }
-      end=Math.min(end,stat.size-1);
+      end=Math.min(end,fileSize-1);
       const chunkSize=end-start+1;
       const stream=Readable.toWeb(fsSync.createReadStream(file,{start,end}));
       return new Response(stream,{
        status:206,
        headers:{
         'Content-Type':mime,
-        'Content-Range':`bytes ${start}-${end}/${stat.size}`,
+        'Content-Range':`bytes ${start}-${end}/${fileSize}`,
         'Content-Length':String(chunkSize),
         'Accept-Ranges':'bytes'
        }
@@ -99,7 +101,7 @@ if(!app.requestSingleInstanceLock())app.quit();else{
      status:200,
      headers:{
       'Content-Type':mime,
-      'Content-Length':String(stat.size),
+      'Content-Length':String(fileSize),
       'Accept-Ranges':'bytes'
      }
     });
@@ -112,8 +114,9 @@ if(!app.requestSingleInstanceLock())app.quit();else{
    const result=await dialog.showOpenDialog(window,{title:'Open a landscape video',properties:['openFile'],filters:[{name:'Videos',extensions:['mp4','mov','m4v','webm','mkv']}]});
    if(result.canceled)return null;
    const file=result.filePaths[0],meta=await video.probe(binary('ffprobe'),file),id=randomUUID();
-   const item={...meta,id,name:path.basename(file),path:file,url:`danceframe://app/media/${id}`};
-   media.clear();media.set(id,item);const {path:_,...publicMeta}=item;return publicMeta;
+   const stat=await fs.stat(file);
+   const item={...meta,id,name:path.basename(file),path:file,size:stat.size,url:`danceframe://app/media/${id}`};
+   media.clear();media.set(id,item);const {path:_,size:__, ...publicMeta}=item;return publicMeta;
   });
   handle('project:save',async data=>{
    if(!data||JSON.stringify(data).length>2*1024*1024)throw Error('Invalid project.');

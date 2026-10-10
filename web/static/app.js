@@ -45,7 +45,7 @@ function renderPoints() {
   $('save').disabled=!meta;
   if(!points.length) $('pointList').innerHTML='<span class="muted">Click on yourself in the source video to add the first point.</span>';
 }
-function seekPoint(p) {video.pause();video.currentTime=p.t;selected=p.t;renderPoints();draw();}
+function seekPoint(p) {video.pause();selected=p.t;seekVideo(p.t);renderPoints();draw();}
 function geometry() {
   const w=canvas.clientWidth,h=canvas.clientHeight;
   const scale=Math.min(w/meta.width,h/meta.height);
@@ -56,13 +56,13 @@ function draw() {
   const dpr=window.devicePixelRatio||1, w=canvas.clientWidth,h=canvas.clientHeight;
   if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}
   const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
-  const g=geometry(), x=Math.floor(position(video.currentTime)*(meta.width-meta.cropWidth)), left=g.left+x*g.scale, cw=meta.cropWidth*g.scale;
+  const displayTime=scrubbing?Number($('scrub').value):video.currentTime;
+  const g=geometry(), x=Math.floor(position(displayTime)*(meta.width-meta.cropWidth)), left=g.left+x*g.scale, cw=meta.cropWidth*g.scale;
   ctx.fillStyle='rgba(0,0,0,.60)';ctx.fillRect(g.left,g.top,left-g.left,g.h);ctx.fillRect(left+cw,g.top,g.left+g.w-left-cw,g.h);
   ctx.strokeStyle='#ddff8f';ctx.lineWidth=1.7;ctx.strokeRect(left,g.top+1,cw,g.h-2);
   ctx.setLineDash([4,5]);ctx.strokeStyle='rgba(221,255,143,.4)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left+cw/2,g.top);ctx.lineTo(left+cw/2,g.top+g.h);ctx.stroke();ctx.setLineDash([]);
   ctx.fillStyle='#ddff8f';ctx.fillRect(left+8,g.top+9,63,20);ctx.fillStyle='#1a2116';ctx.font='600 10px sans-serif';ctx.fillText('YOUR CUT',left+14,g.top+23);
   preview.getContext('2d').drawImage(video,x,0,meta.cropWidth,meta.cropHeight,0,0,preview.width,preview.height);
-  const displayTime=scrubbing?Number($('scrub').value):video.currentTime;
   $('clock').innerHTML=`${time(displayTime)} <em>/ ${time(meta.duration)}</em>`;
   if(!scrubbing)$('scrub').value=video.currentTime;
 }
@@ -98,32 +98,69 @@ $('file').onchange=async event=>{
 };
 video.onerror=()=>notice('Your browser cannot decode this video. Try Chrome or an H.264 MP4. The original file is unchanged.',true);
 video.onplay=()=>$('play').textContent='Ⅱ';video.onpause=()=>$('play').textContent='▶';
-function toggle(){if(meta){if(video.paused){if(video.currentTime<trim.start||video.currentTime>=trim.end-0.01)video.currentTime=trim.start;video.play().catch(e=>notice(e.message,true));}else video.pause();}}
-function step(n){if(meta){video.pause();video.currentTime=clamp(video.currentTime+n/meta.fps,0,Math.max(0,meta.duration-1/meta.fps));draw();}}
+let pendingTime=null;
+function seekVideo(t){
+  if(!meta||video.readyState<1)return;
+  const target=clamp(t,0,meta.duration);
+  if(video.seeking){
+    pendingTime=target;
+  }else{
+    pendingTime=null;
+    if(Math.abs(video.currentTime-target)>=0.0001){
+      video.currentTime=target;
+    }
+  }
+}
+video.addEventListener('seeked',()=>{
+  if(pendingTime!==null){
+    const next=pendingTime;
+    pendingTime=null;
+    if(Math.abs(video.currentTime-next)>=0.0001){
+      video.currentTime=next;
+    }
+  }
+  draw();
+});
+function toggle(){if(meta){if(video.paused){if(video.currentTime<trim.start||video.currentTime>=trim.end-0.01)seekVideo(trim.start);video.play().catch(e=>notice(e.message,true));}else video.pause();}}
+function step(n){if(meta){video.pause();seekVideo(clamp(video.currentTime+n/meta.fps,0,Math.max(0,meta.duration-1/meta.fps)));draw();}}
 $('play').onclick=toggle;$('back').onclick=()=>step(-1);$('forward').onclick=()=>step(1);
 function applyScrub(t){
   if(!meta)return;
   video.pause();
-  video.currentTime=clamp(t,0,meta.duration);
-  $('scrub').value=video.currentTime;
+  const clamped=clamp(t,0,meta.duration);
+  $('scrub').value=clamped;
   selected=null;
+  seekVideo(clamped);
   draw();
 }
 $('scrub').onpointerdown=()=>{scrubbing=true;video.pause();};
-window.addEventListener('pointerup',()=>{if(scrubbing){scrubbing=false;if(meta)$('scrub').value=video.currentTime;}});
-window.addEventListener('pointercancel',()=>{scrubbing=false;});
+window.addEventListener('pointerup',()=>{
+  if(scrubbing){
+    scrubbing=false;
+    if(meta){
+      seekVideo(Number($('scrub').value));
+      draw();
+    }
+  }
+});
+window.addEventListener('pointercancel',()=>{
+  if(scrubbing){
+    scrubbing=false;
+    if(meta)seekVideo(Number($('scrub').value));
+  }
+});
 $('scrub').oninput=()=>{
   if(!meta)return;
   video.pause();
-  video.currentTime=Number($('scrub').value);
   selected=null;
+  seekVideo(Number($('scrub').value));
   draw();
 };
 $('scrub').onchange=()=>{
   if(!meta)return;
   video.pause();
-  video.currentTime=Number($('scrub').value);
   selected=null;
+  seekVideo(Number($('scrub').value));
   draw();
 };
 $('timeline').onclick=e=>{
