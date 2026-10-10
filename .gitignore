@@ -1,0 +1,18 @@
+# Xcode & Swift Package Manager
+.build/
+.swiftpm/
+*.xcodeproj/
+*.xcworkspace/
+.DS_Store
+
+# Packaged macOS app bundle
+DanceFrame.app/
+
+# Exports & user caches
+export/
+*.mp4
+*.danceframe.json
+node_modules
+build-resources/
+work/
+
