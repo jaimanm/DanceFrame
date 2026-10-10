@@ -8,6 +8,12 @@ A native, high-performance macOS desktop application built with **SwiftUI**, **A
 - **Interactive "YOUR CUT" Framing**:
   - Direct canvas visualizer of the 9:16 vertical crop.
   - Drag the crop window directly on the video to position your subject.
+- **Intelligent Vision Auto-Tracking**:
+  - Hardware-accelerated Apple Vision person tracking (`VNDetectHumanRectanglesRequest` & `VNDetectHumanBodyPoseRequest`).
+  - Automatically follow a dancer across the frame with occlusion awareness and edge/out-of-frame hold.
+  - Start auto-tracking from any chosen frame or playhead position.
+  - Configurable sensitivity presets (Fine, Medium, Coarse).
+  - Fully compatible with manual keyframes: adjust, fine-tune, or undo auto-generated points at any time.
 - **Precision Motion Timeline**:
   - Live timeline scrubbing without stutter or snap-back.
   - Green keyframe markers indicate tracking points.
@@ -36,7 +42,11 @@ A native, high-performance macOS desktop application built with **SwiftUI**, **A
 - <kbd>Shift</kbd> + <kbd>←</kbd> / <kbd>→</kbd>: Step backward / forward 1 second
 - <kbd>Cmd</kbd> + <kbd>O</kbd>: Open video or project file
 - <kbd>Cmd</kbd> + <kbd>S</kbd>: Save project (`.danceframe.json`)
-- <kbd>Cmd</kbd> + <kbd>Z</kbd>: Undo last tracking point addition
+- <kbd>Cmd</kbd> + <kbd>Z</kbd>: Undo last action
+- <kbd>Shift</kbd> + Click keyframe: Select a range of keyframes
+- <kbd>Cmd</kbd> + Click keyframe: Toggle individual keyframe selection
+- <kbd>⌫</kbd> / <kbd>Delete</kbd>: Delete all selected keyframes
+- <kbd>Esc</kbd>: Deselect keyframes
 
 ## Building and Packaging
 

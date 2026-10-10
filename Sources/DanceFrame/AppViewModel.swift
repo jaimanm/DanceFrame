@@ -12,11 +12,30 @@ public final class AppViewModel: ObservableObject {
     @Published public var undoHistory: [[TrackingPoint]] = []
     @Published public var trim = TrimRange()
     @Published public var mode: MotionMode = .smooth
-    @Published public var selectedPointId: UUID?
+    @Published public var selectedPointIds: Set<UUID> = []
+    @Published public var anchorPointId: UUID? = nil
+
+    public var selectedPointId: UUID? {
+        get { selectedPointIds.first }
+        set {
+            if let id = newValue {
+                selectedPointIds = [id]
+                anchorPointId = id
+            } else {
+                selectedPointIds.removeAll()
+                anchorPointId = nil
+            }
+        }
+    }
+
     @Published public var exportSize: String = "1080"
     @Published public var noticeText: String = "Open a landscape video to get started. Everything stays local on this Mac."
     @Published public var isNoticeError: Bool = false
+    @Published public var isAutoTracking: Bool = false
+    @Published public var autoTrackProgress: Double = 0.0
+    @Published public var autoTrackSensitivity: TrackingSensitivity = .medium
 
+    private let tracker = PersonTracker()
     private var loopTimer: Timer?
 
     public init() {
@@ -110,27 +129,74 @@ public final class AppViewModel: ObservableObject {
         let tolerance = 0.5 / meta.fps
         if let idx = points.firstIndex(where: { abs($0.t - t) < tolerance }) {
             points[idx].x = clampedX
-            selectedPointId = points[idx].id
+            selectedPointIds = [points[idx].id]
+            anchorPointId = points[idx].id
         } else {
             let newPoint = TrackingPoint(t: t, x: clampedX)
             points.append(newPoint)
             points.sort(by: { $0.t < $1.t })
-            selectedPointId = newPoint.id
+            selectedPointIds = [newPoint.id]
+            anchorPointId = newPoint.id
+        }
+    }
+
+    public func handlePointClick(_ point: TrackingPoint, isShift: Bool, isCommand: Bool) {
+        if isShift, let anchorId = anchorPointId, let anchorPoint = points.first(where: { $0.id == anchorId }) {
+            // Shift-click range selection: select all keyframes between anchor and clicked point
+            let tMin = min(anchorPoint.t, point.t)
+            let tMax = max(anchorPoint.t, point.t)
+            let rangePoints = points.filter { $0.t >= tMin - 0.0001 && $0.t <= tMax + 0.0001 }
+            selectedPointIds = Set(rangePoints.map { $0.id })
+            engine.pause()
+            engine.seek(to: point.t)
+        } else if isCommand {
+            // Cmd-click toggle individual point
+            if selectedPointIds.contains(point.id) {
+                selectedPointIds.remove(point.id)
+                if anchorPointId == point.id {
+                    anchorPointId = selectedPointIds.first
+                }
+            } else {
+                selectedPointIds.insert(point.id)
+                anchorPointId = point.id
+                engine.pause()
+                engine.seek(to: point.t)
+            }
+        } else {
+            // Normal click: select single point and update anchor
+            selectedPointIds = [point.id]
+            anchorPointId = point.id
+            engine.pause()
+            engine.seek(to: point.t)
         }
     }
 
     public func deletePoint(id: UUID) {
         recordUndo()
         points.removeAll(where: { $0.id == id })
-        if selectedPointId == id {
-            selectedPointId = nil
+        selectedPointIds.remove(id)
+        if anchorPointId == id {
+            anchorPointId = selectedPointIds.first
         }
     }
 
+    public func deleteSelectedPoints() {
+        guard !selectedPointIds.isEmpty else { return }
+        recordUndo()
+        let count = selectedPointIds.count
+        points.removeAll(where: { selectedPointIds.contains($0.id) })
+        selectedPointIds.removeAll()
+        anchorPointId = nil
+        setNotice("Deleted \(count) keyframe\(count == 1 ? "" : "s"). Press Cmd+Z to undo.")
+    }
+
+    public func clearSelection() {
+        selectedPointIds.removeAll()
+        anchorPointId = nil
+    }
+
     public func seekToPoint(_ point: TrackingPoint) {
-        engine.pause()
-        engine.seek(to: point.t)
-        selectedPointId = point.id
+        handlePointClick(point, isShift: false, isCommand: false)
     }
 
     public func setTrimStartHere() {
@@ -255,5 +321,77 @@ public final class AppViewModel: ObservableObject {
                 )
             }
         }
+    }
+
+    public func startAutoTrack() {
+        guard let meta = engine.metadata else { return }
+        guard !isAutoTracking else { return }
+        guard !exporter.isExporting else {
+            setNotice("Please wait for video export to finish before auto-tracking.", isError: true)
+            return
+        }
+
+        engine.pause()
+        recordUndo()
+
+        let startTime = engine.isScrubbing ? engine.scrubTime : engine.currentTime
+        let endTime = min(meta.duration, trim.end)
+        let videoURL = URL(fileURLWithPath: meta.path)
+        let sensitivity = autoTrackSensitivity
+
+        let targetXHint = MotionInterpolator.position(at: startTime, points: points, mode: mode)
+
+        self.mode = .linear
+        isAutoTracking = true
+        autoTrackProgress = 0.0
+        setNotice("Auto-tracking from \(MotionInterpolator.formatTime(startTime))…")
+
+        Task {
+            do {
+                let newPoints = try await tracker.track(
+                    videoURL: videoURL,
+                    metadata: meta,
+                    startTime: startTime,
+                    endTime: endTime,
+                    targetXHint: targetXHint,
+                    sensitivity: sensitivity
+                ) { [weak self] progress in
+                    Task { @MainActor [weak self] in
+                        guard let self = self, self.isAutoTracking else { return }
+                        self.autoTrackProgress = progress
+                    }
+                }
+
+                // Preserve manual keyframes before startTime, merge new auto-tracked points
+                var merged = self.points.filter { $0.t < startTime - 0.001 }
+                merged.append(contentsOf: newPoints)
+                merged.sort(by: { $0.t < $1.t })
+
+                self.points = merged
+                self.mode = .linear
+                self.isAutoTracking = false
+                self.autoTrackProgress = 1.0
+                self.selectedPointId = nil
+                self.setNotice("Auto-tracking complete (\(newPoints.count) keyframes). Motion set to Continuous.")
+            } catch {
+                if let ptErr = error as? PersonTrackerError, case .cancelled = ptErr {
+                    self.setNotice("Auto-tracking cancelled.")
+                } else {
+                    self.setNotice(error.localizedDescription, isError: true)
+                }
+                self.isAutoTracking = false
+                self.autoTrackProgress = 0.0
+            }
+        }
+    }
+
+    public func cancelAutoTrack() {
+        guard isAutoTracking else { return }
+        Task {
+            await tracker.cancel()
+        }
+        isAutoTracking = false
+        autoTrackProgress = 0.0
+        setNotice("Auto-tracking cancelled.")
     }
 }
