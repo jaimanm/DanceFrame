@@ -341,6 +341,7 @@ public final class AppViewModel: ObservableObject {
 
         let targetXHint = MotionInterpolator.position(at: startTime, points: points, mode: mode)
 
+        self.mode = .linear
         isAutoTracking = true
         autoTrackProgress = 0.0
         setNotice("Auto-tracking from \(MotionInterpolator.formatTime(startTime))…")
@@ -367,10 +368,11 @@ public final class AppViewModel: ObservableObject {
                 merged.sort(by: { $0.t < $1.t })
 
                 self.points = merged
+                self.mode = .linear
                 self.isAutoTracking = false
                 self.autoTrackProgress = 1.0
                 self.selectedPointId = nil
-                self.setNotice("Auto-tracking complete (\(newPoints.count) keyframes). You can click or drag keyframes to fine-tune.")
+                self.setNotice("Auto-tracking complete (\(newPoints.count) keyframes). Motion set to Continuous.")
             } catch {
                 if let ptErr = error as? PersonTrackerError, case .cancelled = ptErr {
                     self.setNotice("Auto-tracking cancelled.")

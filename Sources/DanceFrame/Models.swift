@@ -7,7 +7,7 @@ public enum MotionMode: String, Codable, CaseIterable, Sendable {
     public var displayName: String {
         switch self {
         case .smooth: return "Smooth ease in / out"
-        case .linear: return "Constant speed"
+        case .linear: return "Continuous"
         }
     }
 }
