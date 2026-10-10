@@ -3,6 +3,12 @@ import AppKit
 
 struct BottomActionPanel: View {
     @ObservedObject var vm: AppViewModel
+    @ObservedObject var exporter: VideoExporter
+
+    init(vm: AppViewModel) {
+        self.vm = vm
+        self._exporter = ObservedObject(wrappedValue: vm.exporter)
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 32) {
@@ -89,12 +95,12 @@ struct BottomActionPanel: View {
                             .font(.system(size: 13, weight: .bold))
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
-                            .background(vm.points.isEmpty || vm.exporter.isExporting ? Color.gray.opacity(0.3) : Color(hex: "#ddff8f"))
-                            .foregroundColor(vm.points.isEmpty || vm.exporter.isExporting ? Color.gray : Color(hex: "#172011"))
+                            .background(vm.points.isEmpty || exporter.isExporting ? Color.gray.opacity(0.3) : Color(hex: "#ddff8f"))
+                            .foregroundColor(vm.points.isEmpty || exporter.isExporting ? Color.gray : Color(hex: "#172011"))
                             .cornerRadius(6)
                     }
                     .buttonStyle(.plain)
-                    .disabled(vm.points.isEmpty || vm.exporter.isExporting)
+                    .disabled(vm.points.isEmpty || exporter.isExporting)
                 }
 
                 HStack(spacing: 16) {
@@ -117,27 +123,27 @@ struct BottomActionPanel: View {
                 .padding(.top, 4)
 
                 // Export Progress & Status
-                if vm.exporter.isExporting {
+                if exporter.isExporting {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(vm.exporter.statusMessage)
+                        Text(exporter.statusMessage)
                             .font(.system(size: 11))
                             .foregroundColor(Color(hex: "#b7c6a8"))
 
-                        ProgressView(value: vm.exporter.progress)
+                        ProgressView(value: exporter.progress)
                             .progressViewStyle(.linear)
                             .tint(Color(hex: "#ddff8f"))
 
                         Button("Cancel export") {
-                            vm.exporter.cancel()
+                            exporter.cancel()
                         }
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#ffaaa0"))
                         .buttonStyle(.plain)
                     }
                     .padding(.top, 4)
-                } else if let completedURL = vm.exporter.completedURL {
+                } else if let completedURL = exporter.completedURL {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(vm.exporter.statusMessage)
+                        Text(exporter.statusMessage)
                             .font(.system(size: 11))
                             .foregroundColor(Color(hex: "#b7c6a8"))
 
@@ -151,7 +157,7 @@ struct BottomActionPanel: View {
                         .buttonStyle(.plain)
                     }
                     .padding(.top, 4)
-                } else if let err = vm.exporter.errorMessage {
+                } else if let err = exporter.errorMessage {
                     Text(err)
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#ffa49b"))

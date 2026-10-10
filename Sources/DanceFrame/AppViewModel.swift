@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import Combine
 
 @MainActor
 public final class AppViewModel: ObservableObject {
@@ -36,9 +37,26 @@ public final class AppViewModel: ObservableObject {
     @Published public var autoTrackSensitivity: TrackingSensitivity = .medium
 
     private let tracker = PersonTracker()
+    private var autoTrackTask: Task<Void, Never>? = nil
+    private var preAutoTrackPoints: [TrackingPoint] = []
+    private var preAutoTrackMode: MotionMode = .smooth
     private var loopTimer: Timer?
+    private var cancellables = Set<AnyCancellable>()
 
     public init() {
+        // Forward exporter and engine changes so any views observing AppViewModel re-render
+        exporter.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        engine.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
         // Observe playback to loop/pause at trim.end and update live portrait preview
         loopTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -341,14 +359,19 @@ public final class AppViewModel: ObservableObject {
 
         let targetXHint = MotionInterpolator.position(at: startTime, points: points, mode: mode)
 
+        // Capture pre-tracking state so cancellation can restore original keyframes and mode
+        preAutoTrackPoints = self.points
+        preAutoTrackMode = self.mode
+
         self.mode = .linear
         isAutoTracking = true
         autoTrackProgress = 0.0
         setNotice("Auto-tracking from \(MotionInterpolator.formatTime(startTime))…")
 
-        Task {
+        autoTrackTask = Task { [weak self] in
+            guard let self = self else { return }
             do {
-                let newPoints = try await tracker.track(
+                let newPoints = try await self.tracker.track(
                     videoURL: videoURL,
                     metadata: meta,
                     startTime: startTime,
@@ -362,36 +385,85 @@ public final class AppViewModel: ObservableObject {
                     }
                 }
 
-                // Preserve manual keyframes before startTime, merge new auto-tracked points
+                // Check if user cancelled while track() was running
+                guard !Task.isCancelled, self.isAutoTracking else {
+                    return
+                }
+
+                // Preserve manual keyframes before startTime, merge new auto-tracked points,
+                // and preserve any keyframes manually added while auto-tracking was processing
+                let manualPointsAdded = self.points.filter { pt in
+                    !self.preAutoTrackPoints.contains(where: { $0.id == pt.id })
+                }
+
                 var merged = self.points.filter { $0.t < startTime - 0.001 }
                 merged.append(contentsOf: newPoints)
+
+                // Preserve manual points added during processing
+                for manualPt in manualPointsAdded {
+                    if let idx = merged.firstIndex(where: { abs($0.t - manualPt.t) < 0.01 }) {
+                        merged[idx] = manualPt
+                    } else {
+                        merged.append(manualPt)
+                    }
+                }
+
                 merged.sort(by: { $0.t < $1.t })
 
                 self.points = merged
                 self.mode = .linear
                 self.isAutoTracking = false
                 self.autoTrackProgress = 1.0
+                self.autoTrackTask = nil
                 self.selectedPointId = nil
                 self.setNotice("Auto-tracking complete (\(newPoints.count) keyframes). Motion set to Continuous.")
             } catch {
+                guard self.isAutoTracking else { return }
                 if let ptErr = error as? PersonTrackerError, case .cancelled = ptErr {
-                    self.setNotice("Auto-tracking cancelled.")
+                    self.cancelAutoTrack()
                 } else {
                     self.setNotice(error.localizedDescription, isError: true)
+                    self.isAutoTracking = false
+                    self.autoTrackProgress = 0.0
+                    self.autoTrackTask = nil
                 }
-                self.isAutoTracking = false
-                self.autoTrackProgress = 0.0
             }
         }
     }
 
     public func cancelAutoTrack() {
         guard isAutoTracking else { return }
+        isAutoTracking = false
+        autoTrackProgress = 0.0
+
+        // Cancel the running Task immediately so new points are never applied
+        autoTrackTask?.cancel()
+        autoTrackTask = nil
+
+        // Tell tracker actor to abort frame reading immediately
         Task {
             await tracker.cancel()
         }
-        isAutoTracking = false
-        autoTrackProgress = 0.0
-        setNotice("Auto-tracking cancelled.")
+
+        // Restore original keyframes + preserve any keyframes manually added or edited while processing
+        var restored: [TrackingPoint] = []
+        for prePt in self.preAutoTrackPoints {
+            // If the user modified this point while processing, preserve the edited point
+            if let currentPt = self.points.first(where: { $0.id == prePt.id }) {
+                restored.append(currentPt)
+            } else {
+                restored.append(prePt)
+            }
+        }
+        for pt in self.points {
+            if !restored.contains(where: { $0.id == pt.id }) {
+                restored.append(pt)
+            }
+        }
+        restored.sort(by: { $0.t < $1.t })
+
+        self.points = restored
+        self.mode = self.preAutoTrackMode
+        setNotice("Auto-tracking cancelled. Keyframes preserved.")
     }
 }
