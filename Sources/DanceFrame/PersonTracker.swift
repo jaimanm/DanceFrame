@@ -71,7 +71,8 @@ public actor PersonTracker {
     }
 
     /// Analyzes the video starting from `startTime` up to `endTime`, tracking the selected person.
-    /// Returns decimated, smoothed `TrackingPoint`s ready to be added to the timeline.
+    /// Incorporates clothing/color appearance modeling to prevent latching onto other people,
+    /// and pauses keyframe generation when the subject is out of frame until they re-enter.
     public func track(
         videoURL: URL,
         metadata: VideoMetadata,
@@ -139,7 +140,7 @@ public actor PersonTracker {
         var trackedState: TrackedSubjectState? = nil
         var rawSamples: [(t: Double, normX: Double)] = []
 
-        // Sequence request handler for temporal object tracking fallback
+        // Sequence request handler for temporal tracking assistance during small gaps
         let sequenceHandler = VNSequenceRequestHandler()
         var lastObservation: VNDetectedObjectObservation? = nil
 
@@ -172,7 +173,7 @@ public actor PersonTracker {
             let progress = max(0.0, min(1.0, (currentTime - effectiveStart) / max(0.001, totalDuration)))
             progressHandler(progress)
 
-            // Step 1: Detect humans in the frame
+            // Detect humans in current frame
             let humanObservations = detectHumans(in: pixelBuffer)
 
             if trackedState == nil {
@@ -182,17 +183,22 @@ public actor PersonTracker {
                     targetCenterHintX: initialPersonCenterHint
                 ) {
                     let center = CGPoint(x: bestCandidate.midX, y: bestCandidate.midY)
+                    let initialSignature = ColorSignature.extract(from: pixelBuffer, box: bestCandidate)
+                        ?? ColorSignature.empty()
+
                     trackedState = TrackedSubjectState(
                         center: center,
                         box: bestCandidate,
                         velocityX: 0.0,
                         consecutiveLostFrames: 0,
                         isOutOfFrame: false,
-                        lastTime: currentTime
+                        lastTime: currentTime,
+                        initialSignature: initialSignature,
+                        currentSignature: initialSignature
                     )
                     lastObservation = VNDetectedObjectObservation(boundingBox: bestCandidate)
 
-                    // Record initial sample
+                    // Record initial keyframe sample
                     let normX = calculateCropNormX(
                         personCenterNormX: Double(center.x),
                         meta: metadata,
@@ -200,7 +206,7 @@ public actor PersonTracker {
                     )
                     rawSamples.append((t: currentTime, normX: normX))
                 } else {
-                    // If no person detected within first 45 processed frames (~1.5s), fail early
+                    // Fail early if no person detected within first 45 processed frames (~1.5s)
                     if frameCounter > max(45, stride * 15) {
                         reader.cancelReading()
                         throw PersonTrackerError.noPersonFound(startTime: effectiveStart)
@@ -212,92 +218,146 @@ public actor PersonTracker {
                 guard var state = trackedState else { continue }
                 let dt = max(0.001, currentTime - state.lastTime)
 
-                // Predict expected position based on velocity
-                let predictedX = state.center.x + CGFloat(state.velocityX * dt)
+                if state.isOutOfFrame {
+                    // SUBJECT IS CURRENTLY OUT OF FRAME:
+                    // Do NOT add keyframes! Scan for candidate that matches subject's color signature
+                    var reacquiredMatch: (box: CGRect, signature: ColorSignature)? = nil
+                    var bestReacquireSim = 0.0
 
-                // Find best matching human observation
-                let matchedCandidate = matchCandidate(
-                    observations: humanObservations,
-                    predictedX: predictedX,
-                    state: state,
-                    dt: dt
-                )
+                    for obs in humanObservations {
+                        if let sig = ColorSignature.extract(from: pixelBuffer, box: obs) {
+                            let sim = sig.similarity(to: state.currentSignature) * 0.5
+                                    + sig.similarity(to: state.initialSignature) * 0.5
+                            // Require solid color similarity to confirm it's our dancer
+                            if sim >= 0.50 && sim > bestReacquireSim {
+                                bestReacquireSim = sim
+                                reacquiredMatch = (obs, sig)
+                            }
+                        }
+                    }
 
-                if let matchedBox = matchedCandidate {
-                    // Update state with matched detection
-                    let newCenterX = matchedBox.midX
-                    let measuredVelocity = Double(newCenterX - state.center.x) / dt
+                    if let match = reacquiredMatch {
+                        // Dancer has re-entered the frame!
+                        let newCenterX = match.box.midX
+                        state.center = CGPoint(x: newCenterX, y: match.box.midY)
+                        state.box = match.box
+                        state.velocityX = 0.0
+                        state.consecutiveLostFrames = 0
+                        state.isOutOfFrame = false
+                        state.lastTime = currentTime
+                        state.currentSignature = state.currentSignature.blended(with: match.signature, weight: 0.20)
+                        lastObservation = VNDetectedObjectObservation(boundingBox: match.box)
 
-                    // Exponential smoothing for velocity
-                    let smoothVelocity = (state.velocityX * 0.6) + (measuredVelocity * 0.4)
-
-                    state.center = CGPoint(x: newCenterX, y: matchedBox.midY)
-                    state.box = matchedBox
-                    state.velocityX = smoothVelocity
-                    state.consecutiveLostFrames = 0
-                    state.isOutOfFrame = false
-                    state.lastTime = currentTime
-
-                    lastObservation = VNDetectedObjectObservation(boundingBox: matchedBox)
-
-                    let normX = calculateCropNormX(
-                        personCenterNormX: Double(newCenterX),
-                        meta: metadata,
-                        availableW: availableW
-                    )
-                    rawSamples.append((t: currentTime, normX: normX))
+                        // Resume adding keyframe samples now that dancer is back
+                        let normX = calculateCropNormX(
+                            personCenterNormX: Double(newCenterX),
+                            meta: metadata,
+                            availableW: availableW
+                        )
+                        rawSamples.append((t: currentTime, normX: normX))
+                    } else {
+                        // Still out of frame: update timestamp, but DO NOT add any sample
+                        state.lastTime = currentTime
+                    }
                 } else {
-                    // Detection did not match or person is occluded / out of frame
-                    // Try VNTrackObjectRequest as short-term bridge if available
-                    var trackedViaVision = false
-                    if let prevObs = lastObservation, state.consecutiveLostFrames < 4 {
-                        let trackReq = VNTrackObjectRequest(detectedObjectObservation: prevObs)
-                        trackReq.trackingLevel = .fast
-                        try? sequenceHandler.perform([trackReq], on: pixelBuffer)
-                        if let res = trackReq.results?.first as? VNDetectedObjectObservation,
-                           res.confidence > 0.25 {
-                            let trackBox = res.boundingBox
-                            // Verify that tracking didn't wildly jump to a passerby
-                            if abs(trackBox.midX - predictedX) < 0.15 {
-                                state.center = CGPoint(x: trackBox.midX, y: trackBox.midY)
-                                state.box = trackBox
+                    // SUBJECT IS IN FRAME:
+                    // Predict expected position based on velocity
+                    let predictedX = state.center.x + CGFloat(state.velocityX * dt)
+
+                    // Find best matching human observation with color verification
+                    let matchedResult = matchCandidateWithColor(
+                        observations: humanObservations,
+                        predictedX: predictedX,
+                        state: state,
+                        dt: dt,
+                        pixelBuffer: pixelBuffer
+                    )
+
+                    if let (matchedBox, matchedSignature) = matchedResult {
+                        // Update state with matched detection
+                        let newCenterX = matchedBox.midX
+                        let measuredVelocity = Double(newCenterX - state.center.x) / dt
+
+                        // Exponential smoothing for velocity
+                        let smoothVelocity = (state.velocityX * 0.6) + (measuredVelocity * 0.4)
+
+                        state.center = CGPoint(x: newCenterX, y: matchedBox.midY)
+                        state.box = matchedBox
+                        state.velocityX = smoothVelocity
+                        state.consecutiveLostFrames = 0
+                        state.isOutOfFrame = false
+                        state.lastTime = currentTime
+                        state.currentSignature = state.currentSignature.blended(with: matchedSignature, weight: 0.15)
+
+                        lastObservation = VNDetectedObjectObservation(boundingBox: matchedBox)
+
+                        let normX = calculateCropNormX(
+                            personCenterNormX: Double(newCenterX),
+                            meta: metadata,
+                            availableW: availableW
+                        )
+                        rawSamples.append((t: currentTime, normX: normX))
+                    } else {
+                        // Detection did not match or person is occluded / exiting frame
+                        var trackedViaVision = false
+
+                        // Try VNTrackObjectRequest as short-term bridge only if person was NOT near edge
+                        let nearEdge = (state.center.x <= 0.09 || state.center.x >= 0.91)
+                        if let prevObs = lastObservation, state.consecutiveLostFrames < 3, !nearEdge {
+                            let trackReq = VNTrackObjectRequest(detectedObjectObservation: prevObs)
+                            trackReq.trackingLevel = .fast
+                            try? sequenceHandler.perform([trackReq], on: pixelBuffer)
+                            if let res = trackReq.results?.first as? VNDetectedObjectObservation,
+                               res.confidence > 0.30 {
+                                let trackBox = res.boundingBox
+                                if abs(trackBox.midX - predictedX) < 0.12 {
+                                    // Check color of tracked box to make sure it didn't drift to someone else
+                                    if let boxSig = ColorSignature.extract(from: pixelBuffer, box: trackBox) {
+                                        let sim = boxSig.similarity(to: state.currentSignature) * 0.5
+                                                + boxSig.similarity(to: state.initialSignature) * 0.5
+                                        if sim >= 0.40 {
+                                            state.center = CGPoint(x: trackBox.midX, y: trackBox.midY)
+                                            state.box = trackBox
+                                            state.lastTime = currentTime
+                                            lastObservation = res
+                                            trackedViaVision = true
+
+                                            let normX = calculateCropNormX(
+                                                personCenterNormX: Double(trackBox.midX),
+                                                meta: metadata,
+                                                availableW: availableW
+                                            )
+                                            rawSamples.append((t: currentTime, normX: normX))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if !trackedViaVision {
+                            state.consecutiveLostFrames += 1
+
+                            // Check if person exited the frame boundary
+                            if nearEdge || state.consecutiveLostFrames >= 4 {
+                                // Subject went out of frame! Pause tracking keyframes until they return
+                                state.isOutOfFrame = true
+                                state.velocityX = 0.0
                                 state.lastTime = currentTime
-                                lastObservation = res
-                                trackedViaVision = true
+                                // Do not append sample while out of frame!
+                            } else {
+                                // Brief mid-frame occlusion: coast velocity gently for up to ~0.5s
+                                state.velocityX *= 0.75
+                                state.center.x = max(0.02, min(0.98, state.center.x + CGFloat(state.velocityX * dt)))
+                                state.lastTime = currentTime
 
                                 let normX = calculateCropNormX(
-                                    personCenterNormX: Double(trackBox.midX),
+                                    personCenterNormX: Double(state.center.x),
                                     meta: metadata,
                                     availableW: availableW
                                 )
                                 rawSamples.append((t: currentTime, normX: normX))
                             }
                         }
-                    }
-
-                    if !trackedViaVision {
-                        // Coasting / Handling occlusion or out-of-frame
-                        state.consecutiveLostFrames += 1
-
-                        // Check if near edge of screen
-                        if state.center.x <= 0.08 || state.center.x >= 0.92 {
-                            state.isOutOfFrame = true
-                            state.velocityX = 0
-                        } else {
-                            // Decaying coast velocity during occlusion
-                            state.velocityX *= 0.80
-                            state.center.x = max(0.02, min(0.98, state.center.x + CGFloat(state.velocityX * dt)))
-                        }
-
-                        state.lastTime = currentTime
-
-                        // Keep holding or coasting position so camera stays steady
-                        let normX = calculateCropNormX(
-                            personCenterNormX: Double(state.center.x),
-                            meta: metadata,
-                            availableW: availableW
-                        )
-                        rawSamples.append((t: currentTime, normX: normX))
                     }
                 }
 
@@ -361,7 +421,6 @@ public actor PersonTracker {
                             width: min(1, (maxX - minX) + 0.10),
                             height: min(1, (maxY - minY) + 0.10)
                         )
-                        // If not already covered by a rectangle observation, add it
                         let isCovered = boxes.contains { existing in
                             existing.intersection(poseBox).area / max(0.001, poseBox.area) > 0.5
                         }
@@ -376,7 +435,7 @@ public actor PersonTracker {
         return boxes
     }
 
-    // MARK: - Matching & Association
+    // MARK: - Matching & Association with Color Verification
 
     private func selectInitialSubject(
         observations: [CGRect],
@@ -388,7 +447,6 @@ public actor PersonTracker {
         return observations.min { a, b in
             let distA = abs(Double(a.midX) - targetCenterHintX)
             let distB = abs(Double(b.midX) - targetCenterHintX)
-            // If distances are close, prefer the larger (closer/clearer) subject
             if abs(distA - distB) < 0.08 {
                 return a.area > b.area
             }
@@ -396,36 +454,48 @@ public actor PersonTracker {
         }
     }
 
-    private func matchCandidate(
+    private func matchCandidateWithColor(
         observations: [CGRect],
         predictedX: CGFloat,
         state: TrackedSubjectState,
-        dt: Double
-    ) -> CGRect? {
+        dt: Double,
+        pixelBuffer: CVPixelBuffer
+    ) -> (box: CGRect, signature: ColorSignature)? {
         guard !observations.isEmpty else { return nil }
 
-        // Maximum allowed distance from predicted position (normalized)
-        // Dancers can move briskly, but ~25% of the frame per 0.2s is maximum physically reasonable
         let maxAllowedJump: CGFloat = max(0.12, CGFloat(0.40 * dt))
 
-        var bestMatch: CGRect? = nil
-        var bestScore: CGFloat = CGFloat.greatestFiniteMagnitude
+        var bestMatch: (box: CGRect, signature: ColorSignature)? = nil
+        var bestScore: Double = Double.greatestFiniteMagnitude
 
         for obs in observations {
-            let distX = abs(obs.midX - predictedX)
-            let distY = abs(obs.midY - state.center.y)
-            let sizeDiff = abs(obs.width - state.box.width) / max(0.01, state.box.width)
+            let distX = Double(abs(obs.midX - predictedX))
+            let distY = Double(abs(obs.midY - state.center.y))
+            let sizeDiff = Double(abs(obs.width - state.box.width) / max(0.01, state.box.width))
 
-            // Gate: discard detections that jumped unrealistically far
-            if distX > maxAllowedJump {
+            // Gate 1: discard detections that jumped unrealistically far
+            if CGFloat(distX) > maxAllowedJump {
                 continue
             }
 
-            // Weighted score: horizontal position consistency is primary
-            let score = distX * 2.0 + distY * 0.8 + sizeDiff * 0.4
-            if score < bestScore {
-                bestScore = score
-                bestMatch = obs
+            // Gate 2: verify clothing color appearance
+            guard let candSig = ColorSignature.extract(from: pixelBuffer, box: obs) else {
+                continue
+            }
+
+            let sim = candSig.similarity(to: state.currentSignature) * 0.5
+                    + candSig.similarity(to: state.initialSignature) * 0.5
+
+            // Reject anyone whose clothing color signature is incompatible (< 0.38)
+            if sim < 0.38 {
+                continue
+            }
+
+            // Weighted cost: lower is better (penalizes distance and rewards color similarity)
+            let cost = (distX * 2.0) + (distY * 0.6) + (sizeDiff * 0.3) - (sim * 0.8)
+            if cost < bestScore {
+                bestScore = cost
+                bestMatch = (obs, candSig)
             }
         }
 
@@ -455,21 +525,32 @@ public actor PersonTracker {
         guard !rawSamples.isEmpty else { return [] }
 
         // Step 1: 3-point moving average to filter sensor noise
+        // Note: Do not smooth across large time gaps where subject was out of frame
         var smoothed: [(t: Double, normX: Double)] = []
         for i in 0..<rawSamples.count {
-            let prev = rawSamples[max(0, i - 1)].normX
-            let curr = rawSamples[i].normX
-            let next = rawSamples[min(rawSamples.count - 1, i + 1)].normX
-            let avg = (prev * 0.25) + (curr * 0.50) + (next * 0.25)
-            smoothed.append((t: rawSamples[i].t, normX: avg))
+            let curr = rawSamples[i]
+            let prev = rawSamples[max(0, i - 1)]
+            let next = rawSamples[min(rawSamples.count - 1, i + 1)]
+
+            // If neighbor is more than 0.8s away (out-of-frame gap), don't blend with it
+            let usePrev = (curr.t - prev.t) < 0.8
+            let useNext = (next.t - curr.t) < 0.8
+
+            var sum = curr.normX * 0.5
+            var weight = 0.5
+            if usePrev {
+                sum += prev.normX * 0.25
+                weight += 0.25
+            }
+            if useNext {
+                sum += next.normX * 0.25
+                weight += 0.25
+            }
+
+            smoothed.append((t: curr.t, normX: sum / weight))
         }
 
         // Step 2: Adaptive decimation
-        // Keep keyframes when:
-        // - Start & End frames
-        // - Movement exceeds sensitivity threshold
-        // - Direction change (local extremum in movement)
-        // - Max time gap elapsed (~2.5s) to ensure responsiveness
         var kept: [TrackingPoint] = []
         guard let first = smoothed.first else { return [] }
 
@@ -485,12 +566,15 @@ public actor PersonTracker {
             let dxFromLast = abs(curr.normX - lastKept.normX)
             let dtFromLast = curr.t - lastKept.t
 
-            // Check if local extremum (direction reversal)
+            // Detect out-of-frame re-entry (large gap in timestamp)
+            let isReentry = (curr.t - prev.t) > 0.8
+
+            // Detect direction change (local extremum)
             let d1 = curr.normX - prev.normX
             let d2 = next.normX - curr.normX
             let isExtremum = (d1 * d2 < 0) && abs(d1) > 0.005
 
-            if dxFromLast >= threshold || isExtremum || dtFromLast >= 2.5 {
+            if isReentry || dxFromLast >= threshold || isExtremum || dtFromLast >= 2.5 {
                 kept.append(TrackingPoint(t: curr.t, x: curr.normX))
                 lastKept = curr
             }
@@ -504,6 +588,117 @@ public actor PersonTracker {
     }
 }
 
+// MARK: - Color Signature Appearance Model
+
+struct ColorSignature: Sendable {
+    static let binCount = 40 // 4 grayscale bins + 12 hues * 3 saturations
+    var bins: [Double]
+
+    static func empty() -> ColorSignature {
+        ColorSignature(bins: [Double](repeating: 0.0, count: binCount))
+    }
+
+    /// Extracts normalized HSV color histogram of the subject's torso from CVPixelBuffer
+    static func extract(from pixelBuffer: CVPixelBuffer, box: CGRect) -> ColorSignature? {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+
+        let bufWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let bufHeight = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+
+        // Vision coordinates: box.origin is bottom-left
+        // Sample torso: width 20% to 80%, height 30% to 85%
+        let xMin = max(0, min(bufWidth - 1, Int((box.origin.x + box.width * 0.20) * Double(bufWidth))))
+        let xMax = max(xMin + 1, min(bufWidth - 1, Int((box.origin.x + box.width * 0.80) * Double(bufWidth))))
+
+        let yBotNorm = box.origin.y + box.height * 0.30
+        let yTopNorm = box.origin.y + box.height * 0.85
+        let yMin = max(0, min(bufHeight - 1, Int((1.0 - yTopNorm) * Double(bufHeight))))
+        let yMax = max(yMin + 1, min(bufHeight - 1, Int((1.0 - yBotNorm) * Double(bufHeight))))
+
+        guard xMax > xMin, yMax > yMin else { return nil }
+
+        var histogram = [Double](repeating: 0.0, count: binCount)
+        var sampleCount = 0
+
+        let stepX = max(1, (xMax - xMin) / 16)
+        let stepY = max(1, (yMax - yMin) / 16)
+
+        let buffer = baseAddress.assumingMemoryBound(to: UInt8.self)
+
+        for y in stride(from: yMin, through: yMax, by: stepY) {
+            let rowOffset = y * bytesPerRow
+            for x in stride(from: xMin, through: xMax, by: stepX) {
+                let pixelOffset = rowOffset + x * 4
+                let b = Double(buffer[pixelOffset]) / 255.0
+                let g = Double(buffer[pixelOffset + 1]) / 255.0
+                let r = Double(buffer[pixelOffset + 2]) / 255.0
+
+                let maxVal = max(r, max(g, b))
+                let minVal = min(r, min(g, b))
+                let delta = maxVal - minVal
+                let v = maxVal
+                let s = maxVal == 0 ? 0 : delta / maxVal
+
+                var binIndex = 0
+                if s < 0.20 {
+                    binIndex = min(3, max(0, Int(v * 4.0)))
+                } else {
+                    var h: Double = 0
+                    if delta > 0.001 {
+                        if maxVal == r {
+                            h = (g - b) / delta
+                        } else if maxVal == g {
+                            h = 2.0 + (b - r) / delta
+                        } else {
+                            h = 4.0 + (r - g) / delta
+                        }
+                        h *= 60.0
+                        if h < 0 { h += 360.0 }
+                    }
+                    let hBin = min(11, max(0, Int(h / 30.0)))
+                    let sBin = min(2, max(0, Int(s * 3.0)))
+                    binIndex = 4 + hBin * 3 + sBin
+                }
+
+                histogram[binIndex] += 1.0
+                sampleCount += 1
+            }
+        }
+
+        guard sampleCount > 0 else { return nil }
+        for i in 0..<binCount {
+            histogram[i] /= Double(sampleCount)
+        }
+
+        return ColorSignature(bins: histogram)
+    }
+
+    /// Histogram intersection similarity in range [0.0, 1.0]
+    func similarity(to other: ColorSignature) -> Double {
+        var intersection = 0.0
+        for i in 0..<min(bins.count, other.bins.count) {
+            intersection += min(bins[i], other.bins[i])
+        }
+        return max(0.0, min(1.0, intersection))
+    }
+
+    /// Blends current signature with new observation
+    func blended(with other: ColorSignature, weight: Double) -> ColorSignature {
+        let w = max(0.0, min(1.0, weight))
+        var newBins = [Double](repeating: 0.0, count: bins.count)
+        for i in 0..<bins.count {
+            newBins[i] = bins[i] * (1.0 - w) + other.bins[i] * w
+        }
+        return ColorSignature(bins: newBins)
+    }
+}
+
+// MARK: - Internal State
+
 private struct TrackedSubjectState {
     var center: CGPoint
     var box: CGRect
@@ -511,6 +706,8 @@ private struct TrackedSubjectState {
     var consecutiveLostFrames: Int
     var isOutOfFrame: Bool
     var lastTime: Double
+    var initialSignature: ColorSignature
+    var currentSignature: ColorSignature
 }
 
 private extension CGRect {
