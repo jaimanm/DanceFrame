@@ -21,11 +21,55 @@ struct TimelineView: View {
                     Text("\(vm.points.count) tracking point\(vm.points.count == 1 ? "" : "s")")
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#81858f"))
+
+                    if !vm.selectedPointIds.isEmpty {
+                        Text("·")
+                            .foregroundColor(Color(hex: "#50545f"))
+                        Text("\(vm.selectedPointIds.count) selected")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(Color(hex: "#ddff8f"))
+                    }
                 }
 
                 Spacer()
 
                 HStack(spacing: 8) {
+                    if !vm.selectedPointIds.isEmpty {
+                        Button(action: { vm.deleteSelectedPoints() }) {
+                            HStack(spacing: 4) {
+                                Text("🗑 Delete")
+                                Text("(\(vm.selectedPointIds.count))")
+                                    .font(.system(size: 10, weight: .bold))
+                                Text("⌫")
+                                    .font(.system(size: 9))
+                                    .padding(.horizontal, 3)
+                                    .padding(.vertical, 1)
+                                    .background(Color.black.opacity(0.3))
+                                    .cornerRadius(2)
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color(hex: "#3d1e1c"))
+                            .foregroundColor(Color(hex: "#ff9c91"))
+                            .cornerRadius(5)
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "#6b2c28"), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button(action: { vm.clearSelection() }) {
+                            Text("Deselect")
+                                .font(.system(size: 11))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color(hex: "#26282d"))
+                                .foregroundColor(Color(hex: "#a6acb7"))
+                                .cornerRadius(5)
+                                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "#41434a"), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     Button(action: { vm.undo() }) {
                         Text("↶ Undo")
                             .font(.system(size: 11, weight: .semibold))
@@ -163,16 +207,28 @@ struct TimelineView: View {
                     // Tracking Point Markers (Diamonds)
                     ForEach(vm.points) { point in
                         let pointNorm = min(1, max(0, point.t / duration))
-                        let isSelected = (point.id == vm.selectedPointId)
+                        let isSelected = vm.selectedPointIds.contains(point.id)
 
-                        Rectangle()
-                            .fill(isSelected ? Color.white : Color(hex: "#ddff8f"))
-                            .frame(width: 9, height: 9)
-                            .rotationEffect(.degrees(45))
-                            .position(x: pointNorm * w, y: h - 11)
-                            .onTapGesture {
-                                vm.seekToPoint(point)
+                        ZStack {
+                            if isSelected {
+                                Rectangle()
+                                    .stroke(Color.white, lineWidth: 1.5)
+                                    .frame(width: 13, height: 13)
+                                    .rotationEffect(.degrees(45))
                             }
+
+                            Rectangle()
+                                .fill(isSelected ? Color.white : Color(hex: "#ddff8f"))
+                                .frame(width: isSelected ? 10 : 9, height: isSelected ? 10 : 9)
+                                .rotationEffect(.degrees(45))
+                        }
+                        .position(x: pointNorm * w, y: h - 11)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            let isShift = NSEvent.modifierFlags.contains(.shift)
+                            let isCommand = NSEvent.modifierFlags.contains(.command)
+                            vm.handlePointClick(point, isShift: isShift, isCommand: isCommand)
+                        }
                     }
 
                     // Scrubber Indicator Line & Green Marker Thumb
@@ -233,29 +289,33 @@ struct TimelineView: View {
                             .padding(.vertical, 4)
                     } else {
                         ForEach(Array(vm.points.enumerated()), id: \.element.id) { idx, point in
-                            let isSelected = (point.id == vm.selectedPointId)
+                            let isSelected = vm.selectedPointIds.contains(point.id)
                             HStack(spacing: 6) {
-                                Button(action: { vm.seekToPoint(point) }) {
+                                Button(action: {
+                                    let isShift = NSEvent.modifierFlags.contains(.shift)
+                                    let isCommand = NSEvent.modifierFlags.contains(.command)
+                                    vm.handlePointClick(point, isShift: isShift, isCommand: isCommand)
+                                }) {
                                     Text(String(format: "%02d · %@", idx + 1, MotionInterpolator.formatTime(point.t)))
-                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                        .foregroundColor(Color(hex: "#eeeeee"))
+                                        .font(.system(size: 10, weight: isSelected ? .bold : .medium, design: .monospaced))
+                                        .foregroundColor(isSelected ? Color.white : Color(hex: "#eeeeee"))
                                 }
                                 .buttonStyle(.plain)
 
                                 Button(action: { vm.deletePoint(id: point.id) }) {
                                     Text("×")
                                         .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(Color(hex: "#959ca6"))
+                                        .foregroundColor(isSelected ? Color(hex: "#ffa49b") : Color(hex: "#959ca6"))
                                 }
                                 .buttonStyle(.plain)
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 5)
-                            .background(Color(hex: "#252b2d"))
+                            .background(isSelected ? Color(hex: "#343d3b") : Color(hex: "#252b2d"))
                             .cornerRadius(5)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 5)
-                                    .stroke(isSelected ? Color(hex: "#ddff8f") : Color(hex: "#3b4146"), lineWidth: 1)
+                                    .stroke(isSelected ? Color(hex: "#ddff8f") : Color(hex: "#3b4146"), lineWidth: isSelected ? 1.5 : 1)
                             )
                         }
                     }

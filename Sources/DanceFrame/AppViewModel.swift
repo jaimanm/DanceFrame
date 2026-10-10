@@ -12,7 +12,22 @@ public final class AppViewModel: ObservableObject {
     @Published public var undoHistory: [[TrackingPoint]] = []
     @Published public var trim = TrimRange()
     @Published public var mode: MotionMode = .smooth
-    @Published public var selectedPointId: UUID?
+    @Published public var selectedPointIds: Set<UUID> = []
+    @Published public var anchorPointId: UUID? = nil
+
+    public var selectedPointId: UUID? {
+        get { selectedPointIds.first }
+        set {
+            if let id = newValue {
+                selectedPointIds = [id]
+                anchorPointId = id
+            } else {
+                selectedPointIds.removeAll()
+                anchorPointId = nil
+            }
+        }
+    }
+
     @Published public var exportSize: String = "1080"
     @Published public var noticeText: String = "Open a landscape video to get started. Everything stays local on this Mac."
     @Published public var isNoticeError: Bool = false
@@ -114,27 +129,74 @@ public final class AppViewModel: ObservableObject {
         let tolerance = 0.5 / meta.fps
         if let idx = points.firstIndex(where: { abs($0.t - t) < tolerance }) {
             points[idx].x = clampedX
-            selectedPointId = points[idx].id
+            selectedPointIds = [points[idx].id]
+            anchorPointId = points[idx].id
         } else {
             let newPoint = TrackingPoint(t: t, x: clampedX)
             points.append(newPoint)
             points.sort(by: { $0.t < $1.t })
-            selectedPointId = newPoint.id
+            selectedPointIds = [newPoint.id]
+            anchorPointId = newPoint.id
+        }
+    }
+
+    public func handlePointClick(_ point: TrackingPoint, isShift: Bool, isCommand: Bool) {
+        if isShift, let anchorId = anchorPointId, let anchorPoint = points.first(where: { $0.id == anchorId }) {
+            // Shift-click range selection: select all keyframes between anchor and clicked point
+            let tMin = min(anchorPoint.t, point.t)
+            let tMax = max(anchorPoint.t, point.t)
+            let rangePoints = points.filter { $0.t >= tMin - 0.0001 && $0.t <= tMax + 0.0001 }
+            selectedPointIds = Set(rangePoints.map { $0.id })
+            engine.pause()
+            engine.seek(to: point.t)
+        } else if isCommand {
+            // Cmd-click toggle individual point
+            if selectedPointIds.contains(point.id) {
+                selectedPointIds.remove(point.id)
+                if anchorPointId == point.id {
+                    anchorPointId = selectedPointIds.first
+                }
+            } else {
+                selectedPointIds.insert(point.id)
+                anchorPointId = point.id
+                engine.pause()
+                engine.seek(to: point.t)
+            }
+        } else {
+            // Normal click: select single point and update anchor
+            selectedPointIds = [point.id]
+            anchorPointId = point.id
+            engine.pause()
+            engine.seek(to: point.t)
         }
     }
 
     public func deletePoint(id: UUID) {
         recordUndo()
         points.removeAll(where: { $0.id == id })
-        if selectedPointId == id {
-            selectedPointId = nil
+        selectedPointIds.remove(id)
+        if anchorPointId == id {
+            anchorPointId = selectedPointIds.first
         }
     }
 
+    public func deleteSelectedPoints() {
+        guard !selectedPointIds.isEmpty else { return }
+        recordUndo()
+        let count = selectedPointIds.count
+        points.removeAll(where: { selectedPointIds.contains($0.id) })
+        selectedPointIds.removeAll()
+        anchorPointId = nil
+        setNotice("Deleted \(count) keyframe\(count == 1 ? "" : "s"). Press Cmd+Z to undo.")
+    }
+
+    public func clearSelection() {
+        selectedPointIds.removeAll()
+        anchorPointId = nil
+    }
+
     public func seekToPoint(_ point: TrackingPoint) {
-        engine.pause()
-        engine.seek(to: point.t)
-        selectedPointId = point.id
+        handlePointClick(point, isShift: false, isCommand: false)
     }
 
     public func setTrimStartHere() {

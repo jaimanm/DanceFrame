@@ -153,6 +153,16 @@ struct ContentView: View {
                     vm.undo()
                     return nil
                 }
+            case 51, 117: // Backspace (51) / Delete (117)
+                if !vm.selectedPointIds.isEmpty {
+                    vm.deleteSelectedPoints()
+                    return nil
+                }
+            case 53: // Escape key
+                if !vm.selectedPointIds.isEmpty {
+                    vm.clearSelection()
+                    return nil
+                }
             default:
                 break
             }
