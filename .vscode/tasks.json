@@ -1,0 +1,1 @@
+{"version":"2.0.0","tasks":[{"label":"Run DanceFrame Desktop","type":"shell","command":"npm start","isBackground":true,"problemMatcher":[]},{"label":"Build DanceFrame Desktop","type":"shell","command":"npm run build","problemMatcher":[]},{"label":"Test DanceFrame Desktop","type":"shell","command":"npm test","problemMatcher":[]}]}

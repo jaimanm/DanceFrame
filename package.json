@@ -1,0 +1,16 @@
+{
+  "name": "danceframe",
+  "version": "1.0.0",
+  "description": "Offline desktop video reframing with manual tracking and trimming",
+  "main": "desktop/main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test desktop/test/*.test.cjs",
+    "build": "node desktop/build.cjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.7.0"
+  }
+}

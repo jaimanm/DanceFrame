@@ -1,0 +1,9 @@
+node_modules
+node_modules/
+dist/
+build-resources/
+DanceFrame.app/
+work/
+exports/
+__pycache__/
+.DS_Store
