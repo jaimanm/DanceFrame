@@ -121,20 +121,34 @@ struct ContentView: View {
         .background(Color(hex: "#111214"))
         .onAppear {
             setupGlobalKeyMonitor()
+            DispatchQueue.main.async {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+            }
         }
     }
 
     private func setupGlobalKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Avoid capturing typing in text fields
+            // Space always toggles play/pause globally and unfocuses any active text field
+            if event.keyCode == 49 { // Space
+                if let firstResp = NSApp.keyWindow?.firstResponder, firstResp is NSTextView || firstResp is NSTextField {
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                }
+                vm.engine.togglePlayPause()
+                return nil
+            }
+
+            // For other keys, if actively editing in a text field, let it handle text editing
             if let firstResp = NSApp.keyWindow?.firstResponder, firstResp is NSTextView || firstResp is NSTextField {
+                // Return (36) or Escape (53) in a text field commits and clears focus
+                if event.keyCode == 36 || event.keyCode == 53 {
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                    return nil
+                }
                 return event
             }
 
             switch event.keyCode {
-            case 49: // Space
-                vm.engine.togglePlayPause()
-                return nil
             case 123: // Left Arrow
                 let stepAmount = event.modifierFlags.contains(.shift) ? -10 : -1
                 vm.engine.step(frames: stepAmount)

@@ -28,6 +28,9 @@ struct TrimPanel: View {
                         .background(Color(hex: "#24262a"))
                         .cornerRadius(5)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "#41434a"), lineWidth: 1))
+                        .onSubmit {
+                            NSApp.keyWindow?.makeFirstResponder(nil)
+                        }
                 }
 
                 Button(action: { vm.setTrimStartHere() }) {
@@ -56,6 +59,9 @@ struct TrimPanel: View {
                         .background(Color(hex: "#24262a"))
                         .cornerRadius(5)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "#41434a"), lineWidth: 1))
+                        .onSubmit {
+                            NSApp.keyWindow?.makeFirstResponder(nil)
+                        }
                 }
 
                 Button(action: { vm.setTrimEndHere() }) {
