@@ -3,6 +3,12 @@ import AppKit
 
 struct LivePortraitPreviewView: View {
     @ObservedObject var vm: AppViewModel
+    @ObservedObject var engine: VideoPlayerEngine
+
+    init(vm: AppViewModel) {
+        self.vm = vm
+        self.engine = vm.engine
+    }
 
     var body: some View {
         VStack(spacing: 0) {

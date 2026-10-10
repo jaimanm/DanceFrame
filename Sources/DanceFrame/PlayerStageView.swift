@@ -22,6 +22,12 @@ struct NativeVideoPlayerView: NSViewRepresentable {
 
 struct PlayerStageView: View {
     @ObservedObject var vm: AppViewModel
+    @ObservedObject var engine: VideoPlayerEngine
+
+    init(vm: AppViewModel) {
+        self.vm = vm
+        self.engine = vm.engine
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -166,7 +172,14 @@ struct PlayerStageView: View {
 
 struct CropOverlayCanvas: View {
     @ObservedObject var vm: AppViewModel
+    @ObservedObject var engine: VideoPlayerEngine
     let stageSize: CGSize
+
+    init(vm: AppViewModel, stageSize: CGSize) {
+        self.vm = vm
+        self.engine = vm.engine
+        self.stageSize = stageSize
+    }
 
     var body: some View {
         GeometryReader { geo in

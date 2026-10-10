@@ -3,6 +3,12 @@ import AppKit
 
 struct TimelineView: View {
     @ObservedObject var vm: AppViewModel
+    @ObservedObject var engine: VideoPlayerEngine
+
+    init(vm: AppViewModel) {
+        self.vm = vm
+        self.engine = vm.engine
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -131,6 +137,9 @@ struct TimelineView: View {
                             guard let meta = vm.engine.metadata else { return }
                             let frac = max(0.0, min(1.0, value.location.x / w))
                             let targetSec = frac * meta.duration
+                            // Update currentTime immediately so the tick stays at the
+                            // final scrub position while the async seek finishes.
+                            vm.engine.currentTime = targetSec
                             vm.engine.isScrubbing = false
                             vm.engine.seek(to: targetSec)
                         }
